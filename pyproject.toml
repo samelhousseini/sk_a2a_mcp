@@ -1,0 +1,38 @@
+[project]
+name = "a2a_agents" # Replace with your project name
+version = "0.1.0"
+description = "My awesome project." # Replace with your description
+dependencies = [
+    # Add your dependencies here, e.g., "requests>=2.20"
+    "a2a-samples @ git+https://github.com/google/A2A#subdirectory=samples/python",
+    "semantic-kernel",
+    "requests",
+    "notebook",
+    "ipykernel",
+    "pandas",
+    "matplotlib",
+    "openai",
+    "python-dotenv",
+    "pydantic",
+    "rich",
+    "tenacity",
+    "pillow",
+    "click",
+    "asyncclick",
+    "json_repair",
+    "tiktoken"
+]
+
+[project.optional-dependencies]
+dev = [
+    # Add development dependencies here, e.g., "pytest"
+
+]
+
+
+[project.scripts]
+start-agent = "a2a_agents:main"
+google-a2a-cli = "hosts.cli.__main__:main"
+
+[tool.setuptools]
+packages = ["a2a_agents"]

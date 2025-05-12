@@ -172,3 +172,9 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+
+samples/
+*.prop.md
+do_not_commit/
+uv.lock
