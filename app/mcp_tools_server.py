@@ -9,15 +9,16 @@ This server exposes various functions as tools that agents can call over MCP:
 - Prompt improvement tool
 """
 
+import os
+import sys
 import logging
 import argparse
 import uuid
-from typing import Any, Annotated, Dict, List, Literal, Optional, Union
-from datetime import datetime
-
+import json
 import anyio
 import nest_asyncio
-import uvicorn
+from typing import Any, Annotated, Dict, List, Literal, Optional, Union
+from datetime import datetime
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
 
@@ -211,7 +212,7 @@ class TechnicalTroubleshootingPlugin:
         }
 
     @kernel_function(description="Get diagnostic steps for a technical issue")
-    def get_diagnostic_steps(self, 
+    async def get_diagnostic_steps(self, 
                            issue_type: Annotated[str, "Type of technical issue (internet_connectivity, slow_computer, printer_issues, software_crashes, email_issues)"],
                            step_index: Annotated[int, "Index of the step in the diagnostic flow (0-based)"] = 0) -> str:
         """
@@ -225,22 +226,40 @@ class TechnicalTroubleshootingPlugin:
             The diagnostic instruction for the specified step
         """
         console.print(f"[bold green]MCP Server:[/] Tool called: [magenta]get_diagnostic_steps[/] with issue: [yellow]{issue_type}[/] step: [yellow]{step_index}[/]")
+        
+        thread: ChatHistoryAgentThread = ChatHistoryAgentThread()
+        
         # Normalize issue type by removing spaces and converting to lowercase
         normalized_issue = issue_type.lower().replace(" ", "_").replace("-", "_")
         
-        if normalized_issue not in self.diagnostic_flows:
-            available_issues = ", ".join(self.diagnostic_flows.keys())
-            return f"I don't have a diagnostic flow for '{issue_type}'. Available issue types: {available_issues}"
+        # Create the agent with technical troubleshooting knowledge
+        agent = ChatCompletionAgent(
+            service=AzureChatCompletion(),
+            id="TechnicalTroubleshootingAgent",
+            name="TechnicalTroubleshootingAgent",
+            description="Provides technical troubleshooting guidance for common issues",
+            instructions=f"""You are a technical troubleshooting assistant that provides step-by-step diagnostics.
             
-        steps = self.diagnostic_flows[normalized_issue]
+            Available diagnostic flows:
+            {str(self.diagnostic_flows)}
+            
+            Advanced diagnostic information:
+            {str(self.advanced_diagnostics)}
+            
+            The user is asking about step {step_index} for the issue '{issue_type}'.
+            If the issue type is not recognized, list available issue types.
+            If the step index is out of range, indicate the valid range.
+            Provide only the specific step requested.
+            """
+        )
         
-        if step_index < 0 or step_index >= len(steps):
-            return f"Step index {step_index} is out of range. Available steps are 0 to {len(steps)-1}."
-            
-        return f"Step {step_index+1} of {len(steps)}: {steps[step_index]}"
+        query = f"What is step {step_index+1} for troubleshooting {issue_type}?"
+        response = await agent.get_response(messages=[query], thread=thread)
+        
+        return response.content
 
     @kernel_function(description="Get all diagnostic steps for a technical issue")
-    def get_all_diagnostic_steps(self, 
+    async def get_all_diagnostic_steps(self, 
                                issue_type: Annotated[str, "Type of technical issue (internet_connectivity, slow_computer, printer_issues, software_crashes, email_issues)"]) -> str:
         """
         Get all diagnostic steps for a technical issue
@@ -252,23 +271,36 @@ class TechnicalTroubleshootingPlugin:
             All diagnostic steps for the specified issue
         """
         console.print(f"[bold green]MCP Server:[/] Tool called: [magenta]get_all_diagnostic_steps[/] with issue: [yellow]{issue_type}[/]")
-        # Normalize issue type by removing spaces and converting to lowercase
-        normalized_issue = issue_type.lower().replace(" ", "_").replace("-", "_")
         
-        if normalized_issue not in self.diagnostic_flows:
-            available_issues = ", ".join(self.diagnostic_flows.keys())
-            return f"I don't have a diagnostic flow for '{issue_type}'. Available issue types: {available_issues}"
+        thread: ChatHistoryAgentThread = ChatHistoryAgentThread()
+        
+        # Create the agent with technical troubleshooting knowledge
+        agent = ChatCompletionAgent(
+            service=AzureChatCompletion(),
+            id="TechnicalTroubleshootingAgent",
+            name="TechnicalTroubleshootingAgent",
+            description="Provides technical troubleshooting guidance for common issues",
+            instructions=f"""You are a technical troubleshooting assistant that provides step-by-step diagnostics.
             
-        steps = self.diagnostic_flows[normalized_issue]
+            Available diagnostic flows:
+            {str(self.diagnostic_flows)}
+            
+            Advanced diagnostic information:
+            {str(self.advanced_diagnostics)}
+            
+            The user is asking for all troubleshooting steps for the issue '{issue_type}'.
+            If the issue type is not recognized, list available issue types.
+            Provide a numbered list of all the steps for the requested issue.
+            """
+        )
         
-        result = f"Diagnostic steps for {issue_type}:\n"
-        for i, step in enumerate(steps):
-            result += f"{i+1}. {step}\n"
+        query = f"List all steps for troubleshooting {issue_type}"
+        response = await agent.get_response(messages=[query], thread=thread)
         
-        return result
+        return response.content
         
     @kernel_function(description="Get advanced troubleshooting information")
-    def get_advanced_diagnostics(self, 
+    async def get_advanced_diagnostics(self, 
                                issue_type: Annotated[str, "Type of technical issue (internet_connectivity, slow_computer, printer_issues, software_crashes, email_issues)"]) -> str:
         """
         Get advanced troubleshooting information for technical experts
@@ -280,18 +312,33 @@ class TechnicalTroubleshootingPlugin:
             Advanced diagnostic information including tools and common issues
         """
         console.print(f"[bold green]MCP Server:[/] Tool called: [magenta]get_advanced_diagnostics[/] with issue: [yellow]{issue_type}[/]")
-        normalized_issue = issue_type.lower().replace(" ", "_").replace("-", "_")
         
-        if normalized_issue not in self.advanced_diagnostics:
-            return f"No advanced diagnostic information available for '{issue_type}'."
+        thread: ChatHistoryAgentThread = ChatHistoryAgentThread()
+        
+        # Create the agent with technical troubleshooting knowledge
+        agent = ChatCompletionAgent(
+            service=AzureChatCompletion(),
+            id="TechnicalTroubleshootingAgent",
+            name="TechnicalTroubleshootingAgent",
+            description="Provides advanced technical troubleshooting guidance for experts",
+            instructions=f"""You are a technical troubleshooting assistant that provides advanced diagnostic information.
             
-        info = self.advanced_diagnostics[normalized_issue]
+            Available diagnostic flows:
+            {str(self.diagnostic_flows)}
+            
+            Advanced diagnostic information:
+            {str(self.advanced_diagnostics)}
+            
+            The user is asking for advanced troubleshooting information for the issue '{issue_type}'.
+            If the issue type is not recognized, indicate that advanced information is not available.
+            Provide detailed information about recommended tools and common root causes for the requested issue.
+            """
+        )
         
-        result = f"Advanced diagnostics for {issue_type}:\n\n"
-        result += "Recommended tools:\n- " + "\n- ".join(info["tools"]) + "\n\n"
-        result += "Common root causes:\n- " + "\n- ".join(info["common_issues"])
+        query = f"Provide advanced troubleshooting information for {issue_type}"
+        response = await agent.get_response(messages=[query], thread=thread)
         
-        return result
+        return response.content
 
 
 #-------------------------------------------------------------------------------
@@ -312,7 +359,7 @@ class SupportEscalationPlugin:
         }
         
     @kernel_function(description="Create a support case for escalation")
-    def create_support_case(self,
+    async def create_support_case(self,
                           name: Annotated[str, "Customer name"],
                           contact: Annotated[str, "Contact information (email or phone)"],
                           issue: Annotated[str, "Description of the issue"],
@@ -330,11 +377,9 @@ class SupportEscalationPlugin:
             Confirmation with case ID and estimated response time
         """
         console.print(f"[bold green]MCP Server:[/] Tool called: [magenta]create_support_case[/] for customer: [yellow]{name}[/] priority: [yellow]{priority}[/]")
-        # Normalize priority
-        priority = priority.lower()
-        if priority not in self.priority_definitions:
-            priority = "medium"
-            
+        
+        thread: ChatHistoryAgentThread = ChatHistoryAgentThread()
+        
         # Generate a case ID
         case_id = f"CASE-{uuid.uuid4().hex[:8].upper()}"
         
@@ -349,56 +394,87 @@ class SupportEscalationPlugin:
             "last_updated": datetime.now().isoformat()
         }
         
-        # Define response time based on priority
-        response_times = {
-            "low": "24-48 hours",
-            "medium": "8-24 hours",
-            "high": "2-4 hours",
-            "critical": "15-30 minutes"
-        }
+        # Create the agent with support escalation knowledge
+        agent = ChatCompletionAgent(
+            service=AzureChatCompletion(),
+            id="SupportEscalationAgent",
+            name="SupportEscalationAgent",
+            description="Handles support case creation and management",
+            instructions=f"""You are a support escalation assistant that helps create and manage support cases.
+            
+            Priority definitions:
+            {str(self.priority_definitions)}
+            
+            A new case has been created with the following details:
+            - Case ID: {case_id}
+            - Customer: {name}
+            - Contact: {contact}
+            - Issue: {issue}
+            - Priority: {priority}
+            - Status: open
+            
+            Provide a confirmation message that includes:
+            1. The case ID
+            2. Expected response time based on priority
+            3. A brief explanation of next steps
+            """
+        )
         
-        return f"""
-        Support case created successfully!
+        query = f"Confirm creation of support case for {name}"
+        response = await agent.get_response(messages=[query], thread=thread)
         
-        Case ID: {case_id}
-        Priority: {priority.upper()}
-        Expected Response: {response_times[priority]}
-        
-        Thank you for your patience, {name}. A support specialist will contact you at {contact} within the estimated response time.
-        """
+        return response.content
         
     @kernel_function(description="Get case status by ID")
-    def get_case_status(self, case_id: Annotated[str, "The ID of the case to check"]) -> str:
+    async def get_case_status(self, case_id: Annotated[str, "The ID of the case to check"]) -> str:
         """
-        Get the current status of a support case
+        Get the status of an existing support case
         
         Args:
             case_id: The ID of the case to check
             
         Returns:
-            Current status and details of the case
+            Status and details of the case, or an error if not found
         """
-        console.print(f"[bold green]MCP Server:[/] Tool called: [magenta]get_case_status[/] for case ID: [yellow]{case_id}[/]")
-        if case_id not in self.cases:
-            return f"Case ID {case_id} not found. Please verify the ID and try again."
+        console.print(f"[bold green]MCP Server:[/] Tool called: [magenta]get_case_status[/] for case: [yellow]{case_id}[/]")
+        
+        thread: ChatHistoryAgentThread = ChatHistoryAgentThread()
+        
+        # Check if case exists
+        case_info = self.cases.get(case_id)
+        
+        # Create the agent with support escalation knowledge
+        agent = ChatCompletionAgent(
+            service=AzureChatCompletion(),
+            id="SupportEscalationAgent",
+            name="SupportEscalationAgent",
+            description="Handles support case status checks",
+            instructions=f"""You are a support escalation assistant that helps provide case status updates.
             
-        case = self.cases[case_id]
+            Priority definitions:
+            {str(self.priority_definitions)}
+            
+            The user is checking the status of case ID: {case_id}
+            
+            Case information:
+            {str(case_info) if case_info else "Case not found"}
+            
+            Provide a helpful status update that includes:
+            1. The case ID and current status
+            2. When the case was created and last updated
+            3. Next steps based on the priority and status
+            
+            If the case doesn't exist, inform the user and suggest they check the case ID or create a new case.
+            """
+        )
         
-        return f"""
-        Case Status: {case['status'].upper()}
+        query = f"What is the status of support case {case_id}?"
+        response = await agent.get_response(messages=[query], thread=thread)
         
-        Case ID: {case_id}
-        Customer: {case['name']}
-        Contact: {case['contact']}
-        Priority: {case['priority'].upper()}
-        Created: {case['created_at']}
-        Last Updated: {case['last_updated']}
-        
-        Issue Description: {case['issue']}
-        """
+        return response.content
         
     @kernel_function(description="Update an existing support case")
-    def update_support_case(self, 
+    async def update_support_case(self, 
                          case_id: Annotated[str, "The ID of the case to update"],
                          additional_info: Annotated[str, "Additional information to add to the case"],
                          status: Annotated[Optional[str], "Optional new status"] = None,
@@ -409,38 +485,78 @@ class SupportEscalationPlugin:
         Args:
             case_id: The ID of the case to update
             additional_info: Additional information to add to the case
-            status: Optional new status
+            status: Optional new status for the case
             priority: Optional new priority level
             
         Returns:
-            Confirmation of the update
+            Confirmation of the update, or an error if the case is not found
         """
-        console.print(f"[bold green]MCP Server:[/] Tool called: [magenta]update_support_case[/] for case ID: [yellow]{case_id}[/]")
-        if case_id not in self.cases:
-            return f"Case ID {case_id} not found. Please verify the ID and try again."
-            
-        case = self.cases[case_id]
+        console.print(f"[bold green]MCP Server:[/] Tool called: [magenta]update_support_case[/] for case: [yellow]{case_id}[/]")
         
-        # Update case information
-        if additional_info:
-            case["additional_info"] = case.get("additional_info", "") + "\n\n" + additional_info
-            
-        if status and status in ["open", "in_progress", "pending_customer", "resolved", "closed"]:
-            case["status"] = status
-            
-        if priority and priority in self.priority_definitions:
-            case["priority"] = priority
-            
-        case["last_updated"] = datetime.now().isoformat()
+        thread: ChatHistoryAgentThread = ChatHistoryAgentThread()
         
-        return f"""
-        Case {case_id} has been successfully updated.
+        # Check if case exists
+        case_info = self.cases.get(case_id)
+        case_updated = False
         
-        Current Status: {case['status'].upper()}
-        Current Priority: {case['priority'].upper()}
-        Last Updated: {case['last_updated']}
-        """
-
+        if case_info:
+            # Update the case
+            case_info["last_updated"] = datetime.now().isoformat()
+            
+            # Add new information
+            case_info["updates"] = case_info.get("updates", [])
+            case_info["updates"].append({
+                "timestamp": datetime.now().isoformat(),
+                "info": additional_info
+            })
+            
+            # Update status if provided
+            if status:
+                case_info["status"] = status
+                
+            # Update priority if provided
+            if priority:
+                case_info["priority"] = priority
+                
+            case_updated = True
+        
+        # Create the agent with support escalation knowledge
+        agent = ChatCompletionAgent(
+            service=AzureChatCompletion(),
+            id="SupportEscalationAgent",
+            name="SupportEscalationAgent",
+            description="Handles support case updates",
+            instructions=f"""You are a support escalation assistant that helps update support cases.
+            
+            Priority definitions:
+            {str(self.priority_definitions)}
+            
+            The user is updating case ID: {case_id}
+            
+            Update information:
+            - Additional info: {additional_info}
+            - Status update: {status if status else 'No change'}
+            - Priority update: {priority if priority else 'No change'}
+            
+            Case information:
+            {str(case_info) if case_info else "Case not found"}
+            
+            Case update status: {"Updated successfully" if case_updated else "Failed - case not found"}
+            
+            Provide a confirmation message that includes:
+            1. The case ID and update status
+            2. A summary of what was updated
+            3. The current status and priority of the case
+            
+            If the case doesn't exist, inform the user and suggest they check the case ID or create a new case.
+            """
+        )
+        
+        query = f"Confirm update of support case {case_id}"
+        response = await agent.get_response(messages=[query], thread=thread)
+        
+        return response.content
+        
 
 #-------------------------------------------------------------------------------
 # Prompt Improvement Plugin
@@ -451,39 +567,43 @@ class PromptImprovementPlugin:
     @kernel_function(description="Improve a prompt for better results")
     async def improve_prompt(self, prompt: Annotated[str, "The prompt to improve"]) -> str:
         """
-        Analyze and improve a prompt to get better results from AI systems
+        Enhance a prompt to get better results from AI systems
         
         Args:
-            prompt: The original prompt to improve
+            prompt: The prompt to improve
             
         Returns:
-            An improved version of the prompt with suggestions
+            An improved version of the prompt
         """
-        console.print(f"[bold green]MCP Server:[/] Tool called: [magenta]improve_prompt[/] for prompt: [yellow]{prompt[:50]}...[/]")
-        try:
-            # Use session.chat to generate an improved prompt
-            request = {
-                "model": "gpt-4",
-                "messages": [
-                    {"role": "system", "content": """You are a prompt engineering expert. Your task is to improve the given prompt to make it:
-1. More specific and clear
-2. Include necessary context
-3. Specify the desired output format
-4. Remove ambiguities
-5. Structure it effectively
-
-Respond with:
-- The improved prompt (formatted and ready to use)
-- Brief explanation of key improvements made"""},
-                    {"role": "user", "content": f"Please improve this prompt:\n\n{prompt}"}
-                ],
-                "temperature": 0.7
-            }
+        console.print(f"[bold green]MCP Server:[/] Tool called: [magenta]improve_prompt[/]")
+        
+        thread: ChatHistoryAgentThread = ChatHistoryAgentThread()
+        
+        # Create the agent with prompt improvement knowledge
+        agent = ChatCompletionAgent(
+            service=AzureChatCompletion(),
+            id="PromptImprovementAgent",
+            name="PromptImprovementAgent",
+            description="Helps improve prompts for better results from AI systems",
+            instructions=f"""You are a prompt engineering assistant that helps improve prompts for better results.
             
-            resp = await server.session.chat(request)
-            return resp.content.text
-        except Exception as e:
-            return f"Error improving prompt: {str(e)}"
+            The user has provided the following prompt:
+            "{prompt}"
+            
+            Improve this prompt to make it:
+            1. More clear and specific
+            2. Better structured with context
+            3. Include relevant details
+            4. Follow prompt engineering best practices
+            
+            Return only the improved prompt, not explanations.
+            """
+        )
+        
+        query = f"Please improve this prompt: {prompt}"
+        response = await agent.get_response(messages=[query], thread=thread)
+        
+        return response.content
 
 
 #-------------------------------------------------------------------------------
@@ -562,10 +682,8 @@ async def run(transport: Literal["sse", "stdio"] = "stdio", port: int = 5001) ->
             logger.info(f"Message endpoint: http://localhost:{port}/messages")
 
         else:
-            # Run with stdio transport
-            logger.info("Starting server with STDIO transport")
-            async with stdio_server() as (read_stream, write_stream):
-                await server.run(read_stream, write_stream)
+            console.print("[bold green]MCP Server:[/] Starting with stdio transport")
+            await stdio_server(server)
                 
     except Exception as e:
         logger.error(f"Error running MCP server: {str(e)}", exc_info=True)

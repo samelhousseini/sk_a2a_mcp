@@ -114,8 +114,19 @@ class OrchestratorAgent(SK_A2A_Agent):
 Always be helpful, professional, and empathetic. Inform the user which specialized service you're routing them to."""
                 
         # Create the support router plugin
+        self.faq_agent_client = BaseA2AClient(url=FAQ_AGENT_URL)
+        self.tech_agent_client = BaseA2AClient(url=TECH_AGENT_URL)
+        self.escalation_agent_client = BaseA2AClient(url=ESCALATION_AGENT_URL)
+
         self.router_plugin = SupportRouterPlugin()
-        
+        self.router_plugin.faq_client = self.faq_agent_client
+        self.router_plugin.tech_client = self.tech_agent_client
+        self.router_plugin.escalation_client = self.escalation_agent_client
+
+        # Set the router's task manager to self for status updates
+        self.router_plugin.task_manager = self
+        self.router_plugin.logger = logging.getLogger("SupportRouterPlugin")
+       
         super().__init__(
             agent_id=agent_id,
             name=name,
@@ -126,11 +137,6 @@ Always be helpful, professional, and empathetic. Inform the user which specializ
         
         # Store agent threads for different sessions
         self.agent_threads = {}
-        
-        # Set the router's task manager to self for status updates
-        self.router_plugin.task_manager = self
-        self.router_plugin.logger = logging.getLogger("SupportRouterPlugin")
-        
         console.print(f"[bold green]Orchestrator Agent:[/] {self.agent.name} initialized with ID: {self.agent.id}")
     
     async def formulate_response(self, task_id: str, agent_query: Dict[str, Any]) -> Message:
