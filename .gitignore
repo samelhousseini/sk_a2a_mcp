@@ -173,8 +173,15 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-
+xtest.ipynb
 samples/
 *.prop.md
 do_not_commit/
 uv.lock
+summaries/
+output/
+cli-output/
+old_agents/
+xtest.py
+test_mcp_connection.py
+.chainlit/

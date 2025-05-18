@@ -45,6 +45,9 @@ from common.types import (
     A2AClientHTTPError, A2AClientJSONError
 )
 
+from rich.console import Console
+console = Console()
+
 from a2a_agents.a2a_cards_resolver import A2ACardsResolver
 
 
@@ -150,6 +153,8 @@ class BaseA2AClient(A2AClient):
         """
         self._log(f"Sending standard task with parameters: {task_params}")
         # Call the parent method to send the task
+        console.print("Sending task with parameters:", task_params, style="bold green")
+
         response = await self.send_task(task_params.model_dump())
         task_id = response.result.id
         
@@ -178,12 +183,10 @@ class BaseA2AClient(A2AClient):
         
         # Initialize a placeholder task_id that will be updated during processing
         outer_task_id = "pending"
-          # Create a response processor that processes responses and yields them
+        # Create a response processor that processes responses and yields them
         async def process_responses() -> AsyncIterable[SendTaskStreamingResponse]:
             nonlocal outer_task_id
-            task_id = None          # Call the parent class's send_task_streaming method
-            # We need to use the parent class method directly, not through super() in a nested function
-            # This method returns an async generator directly - do not await it
+            task_id = None          
             parent_stream = A2AClient.send_task_streaming(self, task_params.model_dump())
             
             # Process each response as it arrives
@@ -193,7 +196,9 @@ class BaseA2AClient(A2AClient):
                     task_id = response.result.id
                     self._initialize_task_storage(task_id)
                     # Update the outer task_id that will be returned
+                    console.print("Task ID received:", task_id, style="bold green")
                     outer_task_id = task_id
+                    console.print("Task ID received:", outer_task_id, style="bold green")
                 
                 # Process different types of streaming responses
                 if response.result:

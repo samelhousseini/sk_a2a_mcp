@@ -6,11 +6,17 @@ import os.path
 import json
 from datetime import datetime
 import sys
+import copy
 import os
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union, Tuple, BinaryIO
 
 from rich.console import Console
+from rich.panel import Panel
+from rich.markdown import Markdown
+from rich.table import Table
+from rich.traceback import install as install_rich_traceback
 console = Console()
+install_rich_traceback(show_locals=True)
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'samples', 'python')))
 
@@ -154,8 +160,8 @@ async def update_task_status(task_manager, task_id: str, state: TaskState,
     
     if task_id not in task_manager.tasks:
         raise ValueError(f"Task {task_id} not found")
-        
-    current_task = task_manager.tasks[task_id]
+
+    current_task = copy.deepcopy(task_manager.tasks[task_id])
     current_task.status.state = state
     current_task.status.message = agent_message
     current_task.status.timestamp = datetime.utcnow()
@@ -204,6 +210,8 @@ async def add_task_artifact(task_manager, task_id: str, name: str, parts: Option
 async def send_status_update_event(task_manager, task_id: str, state: TaskState, 
                                   message_part: Optional[Part] = None,
                                   text_message: Optional[str] = None,
+                                  data_content: Optional[Dict[str, Any]] = None,
+                                  file_part: Optional[FilePart] = None,
                                   final: bool = False):
     """Sends a status update event for SSE streaming communication with support for all modalities"""
     # Create parts list from provided part or text_message
@@ -212,6 +220,10 @@ async def send_status_update_event(task_manager, task_id: str, state: TaskState,
         parts_list.append(message_part)
     elif text_message:
         parts_list.append(create_text_part(text_message))
+    elif data_content:
+        parts_list.append(create_data_part(data_content))
+    elif file_part:
+        parts_list.append(file_part)
     else:
         # Default empty message
         parts_list.append(create_text_part(""))
@@ -222,9 +234,10 @@ async def send_status_update_event(task_manager, task_id: str, state: TaskState,
         error_status = TaskStatus(state=TaskState.FAILED, message=Message(role='agent',parts=[create_text_part('Task not found during processing')]))
         error_event = TaskStatusUpdateEvent(id=task_id, status=error_status, final=True)
         await task_manager.enqueue_events_for_sse(task_id, error_event)
+        console.print(f"[bold red]send_status_update_event::Error:[/] Task {task_id} not found when sending status update event.\nText: {text_message}")
         return
-        
-    current_task = task_manager.tasks[task_id]            
+
+    current_task = copy.deepcopy(task_manager.tasks[task_id])
     current_task.status.state = state
     current_task.status.message = agent_message
     current_task.status.timestamp = datetime.now()
@@ -234,6 +247,10 @@ async def send_status_update_event(task_manager, task_id: str, state: TaskState,
         current_task.history = [agent_message]
     
     status_event = TaskStatusUpdateEvent(id=task_id, status=current_task.status, final=final)
+
+    message = f"[bold green]send_status_update_event::Status Update:[/] Task {task_id} updated to state {state.name} with message:\n {text_message or 'No message provided'}\nStatus: {current_task.status}\nFinal: {final}"
+    console.print(Panel(message, title="Status Update Event Message", border_style="blue"))
+
     await task_manager.enqueue_events_for_sse(task_id, status_event)
 
 async def add_task_artifact_event(task_manager, task_id: str, name: str, 
@@ -943,5 +960,178 @@ def handle_client_error(e: Exception, error_type: str = "A2A Client", indent: st
         import traceback
         traceback.print_exc()
         result["traceback"] = traceback.format_exc()
+    
+    return result
+
+
+# Additional helper functions for agent message processing
+
+def extract_user_query(agent_query: Dict[str, Any], log_prefix: str = None, logger_instance=None) -> Tuple[str, bool]:
+    """
+    Extract user query text from agent_query.
+    
+    Args:
+        agent_query: The dictionary containing query data
+        log_prefix: Optional prefix for log messages (e.g., "[AgentName - taskId]")
+        logger_instance: Optional logger to use for warnings
+        
+    Returns:
+        Tuple of (extracted_text, is_empty_flag)
+    """
+    query_text_parts = agent_query.get("text_contents", [])
+    user_query_text = ""
+    
+    if query_text_parts:
+        if isinstance(query_text_parts[0], str):
+            user_query_text = query_text_parts[0].strip()
+        else:
+            # Try to join all parts as strings
+            user_query_text = " ".join([str(part) for part in query_text_parts]).strip()
+    
+    is_empty = not bool(user_query_text)
+    
+    if is_empty and logger_instance and log_prefix:
+        logger_instance.warning(f"{log_prefix} No user query text found.")
+        
+    return user_query_text, is_empty
+
+def create_agent_response(
+    text_content: Optional[str] = None, 
+    data_content: Optional[Dict[str, Any]] = None,
+    file_content: Optional[Union[
+        str,  # File path
+        Tuple[bytes, Optional[str], Optional[str]],  # (file_bytes, file_name, mime_type)
+        Tuple[str, Optional[str], Optional[str]],  # (file_uri, file_name, mime_type)
+        FilePart  # Existing FilePart object
+    ]] = None,
+    metadata: Optional[Dict[str, Any]] = None
+) -> Message:
+    """
+    Create a standard agent response message with optional text, data, and file parts.
+    
+    Args:
+        text_content: Optional text content for the response
+        data_content: Optional dictionary for structured data in the response
+        file_content: Optional file content which can be:
+            - A file path string
+            - A tuple of (file_bytes, file_name, mime_type)
+            - A tuple of (file_uri, file_name, mime_type)
+            - An existing FilePart object
+        metadata: Optional metadata for the message
+        
+    Returns:
+        Message object with appropriate parts
+    """
+    parts = []
+    
+    # Add text part if provided
+    if text_content:
+        parts.append(TextPart(type="text", text=text_content))
+    
+    # Add data part if provided
+    if data_content:
+        parts.append(DataPart(type="data", data=data_content))
+    
+    # Add file part if provided
+    if file_content:
+        if isinstance(file_content, str):
+            # Assume it's a file path
+            file_part = create_file_part_from_path(file_content)
+            parts.append(file_part)
+        elif isinstance(file_content, tuple):
+            if isinstance(file_content[0], bytes):
+                # (file_bytes, file_name, mime_type)
+                file_bytes, file_name, mime_type = file_content
+                file_part = create_file_part_from_bytes(file_bytes, file_name, mime_type)
+                parts.append(file_part)
+            elif isinstance(file_content[0], str):
+                # (file_uri, file_name, mime_type)
+                file_uri, file_name, mime_type = file_content
+                file_part = create_file_part_from_uri(file_uri, file_name, mime_type)
+                parts.append(file_part)
+        elif isinstance(file_content, FilePart):
+            # Directly use the provided FilePart
+            parts.append(file_content)
+    
+    # Ensure we have at least one part if nothing was provided
+    if not parts:
+        parts.append(TextPart(type="text", text=""))
+    
+    return Message(role="agent", parts=parts, metadata=metadata)
+
+def handle_empty_query(agent_name: str, task_id: str, 
+                      message: str = "I didn't receive a question. Please provide a question.", 
+                      logger_instance=None) -> Message:
+    """
+    Create a standard response for empty query situations.
+    
+    Args:
+        agent_name: Name of the agent for logging
+        task_id: Task ID for logging
+        message: Custom message to return
+        logger_instance: Optional logger for warnings
+        
+    Returns:
+        Message object with appropriate parts
+    """
+    if logger_instance:
+        logger_instance.warning(f"[{agent_name} - {task_id}] No user query text found.")
+    return create_agent_response(message)
+
+def log_agent_response(agent_name: str, task_id: str, response_text: str, 
+                      data_content: Optional[Dict[str, Any]] = None,
+                      logger_instance=None) -> None:
+    """
+    Log an agent's response with standardized formatting.
+    
+    Args:
+        agent_name: Name of the agent
+        task_id: Current task ID
+        response_text: Text part of the response
+        data_content: Optional data part for logging
+        logger_instance: Logger to use
+    """
+    if not logger_instance:
+        return
+        
+    if data_content:
+        data_str = str(data_content).replace("'", '"')
+        logger_instance.info(f"[{agent_name} - {task_id}] Formulated response: {response_text}, Data: {data_str}")
+    else:
+        logger_instance.info(f"[{agent_name} - {task_id}] Formulated response: {response_text}")
+
+def extract_message_content(agent_query: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extract all types of content from agent_query into a structured dictionary.
+    
+    Args:
+        agent_query: The dictionary containing query data
+        
+    Returns:
+        Dictionary containing extracted text, data, and file contents
+    """
+    result = {
+        'text': "",
+        'data': {},
+        'files': []
+    }
+    
+    # Extract text content
+    query_text_parts = agent_query.get("text_contents", [])
+    if query_text_parts:
+        if isinstance(query_text_parts[0], str):
+            result['text'] = query_text_parts[0].strip()
+        else:
+            result['text'] = " ".join([str(part) for part in query_text_parts]).strip()
+    
+    # Extract data content
+    query_data_parts = agent_query.get("data_contents", [])
+    if query_data_parts and isinstance(query_data_parts[0], dict):
+        result['data'] = query_data_parts[0]
+    
+    # Extract file content
+    query_file_parts = agent_query.get("file_contents", [])
+    if query_file_parts:
+        result['files'] = query_file_parts
     
     return result

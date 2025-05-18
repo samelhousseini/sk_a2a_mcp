@@ -20,7 +20,9 @@ dependencies = [
     "click",
     "asyncclick",
     "json_repair",
-    "tiktoken"
+    "tiktoken",
+    "fastmcp",
+    "chainlit"
 ]
 
 [project.optional-dependencies]

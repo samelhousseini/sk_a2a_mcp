@@ -1,6 +1,6 @@
 import asyncio
 import os
-from base_a2a_client import BaseA2AClient
+from agents_examples.base_a2a_client import BaseA2AClient
 from a2a_utils.a2a_helper_functions import create_task_params
 
 # Configuration

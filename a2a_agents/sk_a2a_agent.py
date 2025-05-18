@@ -38,6 +38,10 @@ from semantic_kernel.agents import (
     ChatHistoryAgentThread,
 )
 
+
+import logging
+logger = logging.getLogger(__name__)
+
 from rich.console import Console
 console = Console()
 
@@ -52,6 +56,7 @@ from a2a_agents.a2a_utils.a2a_helper_functions import (
     create_data_part,
     create_message,
     # Part extraction functions
+    parse_message_parts,
     extract_text_from_part,
     extract_data_from_part,
     extract_all_data_parts,
@@ -63,6 +68,16 @@ from a2a_agents.a2a_utils.a2a_helper_functions import (
 from a2a_agents.base_a2a_client import BaseA2AClient
 
 logger = logging.getLogger(__name__)
+
+from semantic_kernel.filters import FilterTypes
+from semantic_kernel.filters.auto_function_invocation.auto_function_invocation_context import (
+    AutoFunctionInvocationContext,
+)
+from semantic_kernel.functions import kernel_function, FunctionResult
+from semantic_kernel.contents.chat_message_content import ChatMessageContent
+from semantic_kernel.contents.function_call_content import FunctionCallContent
+from semantic_kernel.contents.function_result_content import FunctionResultContent
+
 
 
 
@@ -118,37 +133,62 @@ class SK_A2A_Agent(InMemoryTaskManager):
         # Initialize InMemoryTaskManager (takes no args other than self)
         super().__init__()
 
+        if kernel is None:
+            kernel = Kernel()
+
+        @kernel.filter(FilterTypes.AUTO_FUNCTION_INVOCATION)
+        async def log_function_calls(
+            context: AutoFunctionInvocationContext, next
+        ):
+            # Log request
+            print(f"[Filter] Calling {context.function.plugin_name}-{context.function.name} with args {context.arguments}")
+            await next(context)
+            # Log response
+            result = context.function_result.value
+            print(f"[Filter] Result from {context.function.plugin_name}-{context.function.name}: {result}")
+
+
         # Initialize ChatCompletionAgent first (all args must be passed as keywords)
         if chat_service is None:
-            chat_service = AzureChatCompletion()
+            # Default to AzureChatCompletion, assuming environment variables are set
+            # This might need to be more robust or allow easier configuration
+            try:
+                chat_service = AzureChatCompletion()
+                logger.info(f"SK_A2A_Agent {name or agent_id}: Defaulted to AzureChatCompletion.")
+            except Exception as e:
+                logger.warning(f"SK_A2A_Agent {name or agent_id}: Failed to default to AzureChatCompletion: {e}. Chat service remains None. SK Agent might not function fully.")
+                chat_service = None # Ensure it's None if default fails
 
+        print("Plugins:", plugins)
         self.agent = ChatCompletionAgent(
-            kernel=kernel,  # Pass the kernel
+            # kernel=kernel,
             service=chat_service,
             id=agent_id,
             name=name,
             description=description,
             instructions=instructions,
-            plugins=plugins, # type: ignore
+            plugins=plugins, 
             prompt_template_config=prompt_template_config,
             function_choice_behavior=function_choice_behavior,
             arguments=agent_arguments
         )
-
-        try:
-            # Instantiate BaseA2AClient
-            self.a2a_client = BaseA2AClient(
-                agent_card=a2a_agent_card,
-                url=a2a_url,
-                timeout=a2a_timeout,
-                output_dir=a2a_output_dir,
-                debug=a2a_debug
-            )
-        except ValueError as e:
-            self.a2a_client = None
-            logger.error(f"Failed to initialize BaseA2AClient: {e}")
-            
-
+        
+        self.a2a_client = None # Initialize to None
+        if a2a_url or a2a_agent_card: # Only initialize if URL or card is provided
+            try:
+                self.a2a_client = BaseA2AClient(
+                    agent_card=a2a_agent_card,
+                    url=a2a_url,
+                    timeout=a2a_timeout,
+                    output_dir=a2a_output_dir,
+                    debug=a2a_debug,
+                    logger_instance=logger # Pass logger
+                )
+                logger.info(f"SK_A2A_Agent {name or agent_id}: BaseA2AClient initialized for URL '{a2a_url}' or provided card.")
+            except ValueError as e:
+                logger.error(f"SK_A2A_Agent {name or agent_id}: Failed to initialize BaseA2AClient even with URL/card: {e}")
+        else:
+            logger.info(f"SK_A2A_Agent {name or agent_id}: BaseA2AClient not initialized as no a2a_url or a2a_agent_card was provided.")
 
     # Abstract methods from InMemoryTaskManager (which inherits from TaskManager)
     async def on_send_task(self, request: SendTaskRequest) -> SendTaskResponse:
@@ -171,26 +211,30 @@ class SK_A2A_Agent(InMemoryTaskManager):
 
             # Call the agent to formulate a response
             response = await self.formulate_response(task_id, agent_query)
-            console.print(f"Processing response for task {task_id}: {response.content}")
+            console.print(f"Processing response for task {task_id}: {response}")
+
+            response_dict = parse_message_parts(response)
             
             await add_task_artifact(
                 self, task_id,
                 name="processing_result",
                 data_content={
-                    "response": str(response.content),
+                    "response": str(response_dict["data_parts"]),
                 },
-                text_content=str(response.content),
+                text_content=str(response_dict["text_parts"]),
             )
 
-            console.print(f"Added task artifact for task {task_id}: {response.content}")
+            console.print(f"Added task artifact for task {task_id}: {response_dict}")        
+            logger.info(f"SK_A2A_Agent::Added task artifact for task {task_id}: {response_dict}")    
 
             # After processing, you might want to update the task status
             task = await update_task_status(
                 self, task_id, TaskState.COMPLETED, 
-                text_message=f"Completed processing for task {task_id}:\n{str(response.content)}"
+                text_message=f"Completed processing for task {task_id}:\n{str(response_dict)}"
             )
 
             console.print(f"Task {task_id} completed with result: {task}")
+            logger.info(f"SK_A2A_Agent::Task {task_id} completed with result: {task}")
 
             # Return the response
             return SendTaskResponse(id=request.id, result=task)
@@ -269,27 +313,40 @@ class SK_A2A_Agent(InMemoryTaskManager):
 
             # Call the agent to formulate a response
             response = await self.formulate_response(task_id, agent_query)
-            console.print(f"Processing response for task {task_id}: {response.content}")
+
+            console.print(f"Processing SSE response for task {task_id}: {response}")
 
             await send_status_update_event(
                 self, task_id, TaskState.WORKING, 
                 text_message="Collected Agent response."
             )
 
+            text_contents = "\n".join(extract_all_text_parts(response))
+            data_contents = extract_all_data_parts(response)
+            file_contents = extract_all_file_parts(response)
+
             await add_task_artifact_event(
                 self, task_id,
                 name="processing_result",
                 data_content={
-                    "response": str(response.content),
+                    "response": data_contents,
                 },
-                text_content=str(response.content),              
+                text_content=text_contents,
+                file_part=file_contents,
                 final_artifact_chunk=True
             )
 
+            console.print(f"Task {task_id} completed with result: {text_contents}")
+            logger.info(f"SK_A2A_Agent::Task {task_id} completed with result: {text_contents}")
+            
             # Send final status update immediately without sleep
             await send_status_update_event(
-                self, task_id, TaskState.COMPLETED, 
-                text_message=str(response.content), 
+                self, task_id, TaskState.COMPLETED,
+                text_message=text_contents,
+                data_content={
+                    "response": data_contents,
+                },
+                file_part=file_contents,
                 final=True
             )
 
@@ -403,10 +460,15 @@ class SK_A2A_Agent(InMemoryTaskManager):
         return thread
     
 
+    @staticmethod
+    def get_agent_card(host: str, port: int) -> AgentCard:
+        return None
+
     # This method starts the A2A server
     # and sets up the agent card and task manager.
-    def start(self, agent_card: AgentCard, host: str, port: int):
-        self.agent_card = agent_card
+    def start(self, host: str, port: int, agent_card: AgentCard = None):
+        if agent_card is not None: self.agent_card = agent_card
+        else: self.agent_card = self.get_agent_card(host, port)
 
         self.server = A2AServer(
             agent_card=self.agent_card,
@@ -414,4 +476,4 @@ class SK_A2A_Agent(InMemoryTaskManager):
             host=host,
             port=port,
         )
-        self.server.start()    
+        self.server.start()

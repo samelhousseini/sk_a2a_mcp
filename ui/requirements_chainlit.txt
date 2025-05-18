@@ -1,0 +1,5 @@
+chainlit>=0.7.700
+python-dotenv>=1.0.0
+requests>=2.28.2
+rich>=13.0.0
+# Dependencies from the main project should already be installed

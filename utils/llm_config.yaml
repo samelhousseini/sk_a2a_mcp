@@ -1,0 +1,11 @@
+# Configuration for llm_text_generator.py
+source_code: "python/semantic_kernel"
+whitelist:
+  - "semantic_kernel"
+roots:
+  - "a2a_agents"
+model: "o4-mini" # Optional, defaults to o4-mini in the script
+reasoning_efforts: "high" # Optional, defaults to high in the script
+out_root: "summaries"
+out_sub_root: "a2a"
+specific_instruction_file: ""
